@@ -2,6 +2,14 @@
 
 Pytest plugin that lets you run tests in parallel with MPI.
 
+## Installation
+
+To install `pytest-mpi` simply run:
+
+```
+$ python -m pip install /path/to/pytest-mpi-repo
+```
+
 ## Usage
 
 Writing a parallel test simply requires marking the test with the `parallel` marker:
