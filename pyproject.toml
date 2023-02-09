@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-mpi"
+version = "0.1"
+dependencies = ["mpi4py", "pytest"]
+authors = [
+  { name="Connor Ward", email="c.ward20@imperial.ac.uk" },
+]
+description = "A pytest plugin for executing tests in parallel with MPI"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: Pytest",
+]
+
+[project.entry-points.pytest11]
+pytest-mpi = "pytest_mpi"
