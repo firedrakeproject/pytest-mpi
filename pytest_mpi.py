@@ -10,15 +10,19 @@ CHILD_PROCESS_FLAG = "_PYTEST_MPI_CHILD_PROCESS"
 
 
 def pytest_configure(config):
-    if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process():
-        raise pytest.UsageError(
-            "pytest should not be called from within a parallel context "
-            "(e.g. mpiexec -n 3 pytest ...)")
-
     config.addinivalue_line(
         "markers",
         "parallel(nprocs): mark test to run in parallel on nprocs processors (default: 3)"
     )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    using_parallel_markers = any(item.get_closest_marker("parallel") for item in items)
+    if using_parallel_markers and MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process():
+        raise pytest.UsageError(
+            "pytest should not be called from within a parallel context "
+            "(e.g. mpiexec -n 3 pytest ...)")
 
 
 def pytest_runtest_setup(item):
