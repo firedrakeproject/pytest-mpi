@@ -1,4 +1,5 @@
 import collections
+import numbers
 import os
 import subprocess
 
@@ -33,7 +34,7 @@ def pytest_generate_tests(metafunc):
         return
 
     marker, = markers
-    nprocs = _parse_nprocs(marker)
+    nprocs = _parse_marker_nprocs(marker)
     # Only label tests if more than one parallel size is requested
     if len(nprocs) > 1:
         # Trick the function into thinking that it needs an extra fixture argument
@@ -41,14 +42,29 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("_nprocs", nprocs, ids=lambda n: f"nprocs={n}")
 
 
-@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
-    using_parallel_markers = any(item.get_closest_marker("parallel") for item in items)
-    if using_parallel_markers and MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process():
+    # Only modify items if parallel markers are being used
+    if not any(item.get_closest_marker("parallel") for item in items):
+        return
+
+    if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process():
         raise pytest.UsageError(
             "pytest should not be called from within a parallel context "
             "(e.g. mpiexec -n 3 pytest ...)"
         )
+
+    # Add extra markers to each test to allow for querying specific levels of
+    # parallelism (e.g. "-m parallel[3]")
+    for item in items:
+        if item.get_closest_marker("parallel"):
+            nprocs = _extract_nprocs_for_single_test(item)
+            new_marker = f"parallel[{nprocs}]"
+            if new_marker not in pytest.mark._markers:
+                config.addinivalue_line(
+                    "markers",
+                    f"{new_marker}: internal marker"
+                )
+            item.add_marker(getattr(pytest.mark, new_marker))
 
 
 def pytest_runtest_setup(item):
@@ -71,13 +87,8 @@ def _set_parallel_callback(item):
         The test item to run.
 
     """
-    # First check to see if we have parametrised nprocs (if multiple were requested)
-    if hasattr(item, "callspec") and "_nprocs" in item.callspec.params:
-        nprocs = item.callspec.params["_nprocs"]
-    else:
-        # The parallel marker must just want one value of nprocs
-        marker = item.get_closest_marker("parallel")
-        nprocs, = _parse_nprocs(marker)
+    nprocs = _extract_nprocs_for_single_test(item)
+    assert isinstance(nprocs, numbers.Integral)
 
     if nprocs == 1:
         return
@@ -102,7 +113,27 @@ def _set_parallel_callback(item):
     item.obj = parallel_callback
 
 
-def _parse_nprocs(marker):
+def _extract_nprocs_for_single_test(item):
+    """Extract the number of processes that a test is supposed to be run with.
+
+    Unlike `_parse_marker_nprocs`, this function applies to tests that have already
+    been set to require a fixed level of parallelism. In other words, if the
+    parallel marker requested, say, ``[2, 3]`` processes, the tests input to
+    this function have already been split into ``[nprocs=2]`` and ``[nprocs=3]``
+    versions. Therefore, this function returns an integer, rather than a tuple.
+
+    """
+    # First check to see if we have parametrised nprocs (if multiple were requested)
+    if hasattr(item, "callspec") and "_nprocs" in item.callspec.params:
+        nprocs = item.callspec.params["_nprocs"]
+    else:
+        # The parallel marker must just want one value of nprocs
+        marker = item.get_closest_marker("parallel")
+        nprocs, = _parse_marker_nprocs(marker)
+    return nprocs
+
+
+def _parse_marker_nprocs(marker):
     """Return the number of processes requested from a parallel marker.
 
     This function enables one to use the parallel marker with or without
