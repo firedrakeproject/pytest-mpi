@@ -7,10 +7,23 @@ import pytest
 from mpi4py import MPI
 
 
+MAX_NPROCS_FLAG = "PYTEST_MPI_MAX_NPROCS"
+"""Environment variable that can be set to limit the maximum number of processes.
+
+If set then requesting a parallel test with more processes than it will raise an
+error. If unset then any value is accepted.
+"""
+
+
 CHILD_PROCESS_FLAG = "_PYTEST_MPI_CHILD_PROCESS"
 """Environment variable set for the processes spawned by the mpiexec call."""
 
 
+_plugin_in_use = False
+"""Global variable set internally to indicate that parallel markers are used."""
+
+
+@pytest.hookimpl()
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -18,6 +31,16 @@ def pytest_configure(config):
     )
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process() and _xdist_active(session):
+        raise pytest.UsageError(
+            "Wrapping pytest calls in mpiexec is only supported if pytest-xdist "
+            "is not in use"
+        )
+
+
+@pytest.hookimpl()
 def pytest_generate_tests(metafunc):
     """Identify tests with parallel markers and break them apart if necessary.
 
@@ -34,29 +57,37 @@ def pytest_generate_tests(metafunc):
         return
 
     marker, = markers
-    nprocs = _parse_marker_nprocs(marker)
+    nprocss = _parse_marker_nprocs(marker)
+
+    if MAX_NPROCS_FLAG in os.environ:
+        max_nprocs = int(os.environ[MAX_NPROCS_FLAG])
+        for nprocs in nprocss:
+            if nprocs > max_nprocs:
+                raise pytest.UsageError(
+                    "Requested a parallel test with too many ranks "
+                    f"({nprocs} > {MAX_NPROCS_FLAG}={max_nprocs})"
+                )
+
     # Only label tests if more than one parallel size is requested
-    if len(nprocs) > 1:
+    if len(nprocss) > 1:
         # Trick the function into thinking that it needs an extra fixture argument
         metafunc.fixturenames.append("_nprocs")
-        metafunc.parametrize("_nprocs", nprocs, ids=lambda n: f"nprocs={n}")
+        metafunc.parametrize("_nprocs", nprocss, ids=lambda n: f"nprocs={n}")
 
 
+@pytest.hookimpl()
 def pytest_collection_modifyitems(config, items):
-    # Only modify items if parallel markers are being used
-    if not any(item.get_closest_marker("parallel") for item in items):
+    global _plugin_in_use
+
+    _plugin_in_use = any(item.get_closest_marker("parallel") for item in items)
+
+    if not _plugin_in_use:
         return
 
-    if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process():
-        raise pytest.UsageError(
-            "pytest should not be called from within a parallel context "
-            "(e.g. mpiexec -n 3 pytest ...)"
-        )
-
-    # Add extra markers to each test to allow for querying specific levels of
-    # parallelism (e.g. "-m parallel[3]")
     for item in items:
         if item.get_closest_marker("parallel"):
+            # Add extra markers to each test to allow for querying specific levels of
+            # parallelism (e.g. "-m parallel[3]")
             nprocs = _extract_nprocs_for_single_test(item)
             new_marker = f"parallel[{nprocs}]"
             if new_marker not in pytest.mark._markers:
@@ -67,13 +98,59 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(getattr(pytest.mark, new_marker))
 
 
+@pytest.hookimpl()
 def pytest_runtest_setup(item):
-    if item.get_closest_marker("parallel") and not _is_parallel_child_process():
-        _set_parallel_callback(item)
+    if not _plugin_in_use:
+        return
+
+    if item.get_closest_marker("parallel"):
+        if MPI.COMM_WORLD.size == 1:
+            # If using pytest-mpi in "forking" mode, add a callback to item
+            # that calls mpiexec
+            assert not _is_parallel_child_process()
+            _set_parallel_callback(item)
+        elif _is_parallel_child_process():
+            # Already a forked subprocess, run the test unmodified
+            pass
+        else:
+            # Outer mpiexec used, do not fork a subprocess but fail if the
+            # requested parallelism does not match the provided amount
+            nprocs = _extract_nprocs_for_single_test(item)
+            if nprocs != MPI.COMM_WORLD.size:
+                raise pytest.UsageError(
+                    "Attempting to run parallel tests inside an mpiexec call "
+                    "where the requested and provided process counts do not match"
+                )
+    else:
+        # serial test
+        if MPI.COMM_WORLD.size != 1:
+            raise pytest.UsageError(
+                "Serial tests should not be run by multiple processes, consider "
+                "adding a parallel marker to the test"
+            )
+
+
+@pytest.fixture(scope="function", autouse=True)
+def barrier_finalize(request):
+    """Call an MPI barrier at the end of each test.
+
+    This should help localise tests that are not fully collective.
+
+    """
+    if _plugin_in_use:
+        request.addfinalizer(lambda: MPI.COMM_WORLD.barrier())
 
 
 def _is_parallel_child_process():
     return CHILD_PROCESS_FLAG in os.environ
+
+
+def _xdist_active(session):
+    try:
+        import xdist
+        return xdist.is_xdist_controller(session) or xdist.is_xdist_worker(session)
+    except ImportError:
+        return False
 
 
 def _set_parallel_callback(item):
