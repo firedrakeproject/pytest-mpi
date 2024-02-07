@@ -51,7 +51,11 @@ def pytest_generate_tests(metafunc):
     is skipped.
 
     """
-    markers = tuple(m for m in metafunc.function.pytestmark if m.name == "parallel")
+    markers = tuple(
+        m
+        for m in getattr(metafunc.function, "pytestmark", ())
+        if m.name == "parallel"
+    )
 
     if not markers:
         return
