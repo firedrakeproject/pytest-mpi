@@ -18,4 +18,4 @@ classifiers = [
 ]
 
 [project.entry-points.pytest11]
-pytest-mpi = "pytest_mpi"
+pytest-mpi = "pytest_mpi.core"
