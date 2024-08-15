@@ -179,16 +179,18 @@ def _set_parallel_callback(item):
         return
 
     # Set the executable by sniffing sys.argv[0]
+    # This is necessary since invoking pytest in different ways leads to different behaviour:
+    # https://docs.pytest.org/en/latest/how-to/usage.html#calling-pytest-through-python-m-pytest
     full_path = Path(sys.argv[0])
     if full_path.name == "pytest":
-        # If pytest was launched as `pytest -v ...`
+        # If pytest was launched as `pytest ...`
         executable = [sys.argv[0]]
     else:
-        # Otherwise assume pytest was launched as `python -m pytest -v ...`
+        # Otherwise assume pytest was launched as `python -m pytest ...`
         executable = [sys.executable, "-m", "pytest"]
         if Path('/'.join(full_path.parts[-2:])) != Path('pytest/__main__.py'):
             # But warn users if it doesn't look right!
-            warn(f"Unrecognised pyest invocation, trying {' '.join(executable)}")
+            warn(f"Unrecognised pytest invocation, trying {' '.join(executable)}")
 
     # Run xfailing tests to ensure that errors are reported to calling process
     pytest_args = ["--runxfail", "-s", "-q", f"{item.fspath}::{item.name}"]
