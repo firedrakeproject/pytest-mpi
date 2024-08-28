@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pytest-mpi"
 version = "0.1"
-dependencies = ["mpi4py", "pytest"]
+dependencies = ["mpi4py", "pytest", "pytest-split"]
 authors = [
   { name="Connor Ward", email="c.ward20@imperial.ac.uk" },
 ]
