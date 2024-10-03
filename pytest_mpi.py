@@ -2,6 +2,10 @@ import collections
 import numbers
 import os
 import subprocess
+import sys
+
+from pathlib import Path
+from warnings import warn
 
 import pytest
 from mpi4py import MPI
@@ -174,6 +178,20 @@ def _set_parallel_callback(item):
     if nprocs == 1:
         return
 
+    # Set the executable by sniffing sys.argv[0]
+    # This is necessary since invoking pytest in different ways leads to different behaviour:
+    # https://docs.pytest.org/en/latest/how-to/usage.html#calling-pytest-through-python-m-pytest
+    full_path = Path(sys.argv[0])
+    if full_path.name == "pytest":
+        # If pytest was launched as `pytest ...`
+        executable = [sys.argv[0]]
+    else:
+        # Otherwise assume pytest was launched as `python -m pytest ...`
+        executable = [sys.executable, "-m", "pytest"]
+        if Path('/'.join(full_path.parts[-2:])) != Path('pytest/__main__.py'):
+            # But warn users if it doesn't look right!
+            warn(f"Unrecognised pytest invocation, trying {' '.join(executable)}")
+
     # Run xfailing tests to ensure that errors are reported to calling process
     pytest_args = ["--runxfail", "-s", "-q", f"{item.fspath}::{item.name}"]
     # Try to generate less output on other ranks so stdout is easier to read
@@ -183,9 +201,9 @@ def _set_parallel_callback(item):
     ]
 
     cmd = [
-        "mpiexec", "-n", "1", "-genv", CHILD_PROCESS_FLAG, "1", "python", "-m", "pytest"
+        "mpiexec", "-n", "1", "-genv", CHILD_PROCESS_FLAG, "1", *executable
     ] + pytest_args + [
-        ":", "-n", f"{nprocs-1}", "python", "-m", "pytest"
+        ":", "-n", f"{nprocs-1}", *executable
     ] + quieter_pytest_args
 
     def parallel_callback(*args, **kwargs):
