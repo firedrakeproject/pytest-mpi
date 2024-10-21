@@ -149,6 +149,29 @@ def barrier_finalize(request):
         request.addfinalizer(lambda: MPI.COMM_WORLD.barrier())
 
 
+@pytest.fixture(scope="session", autouse=True)
+def spawn_finalize(request):
+    """Disconnect from a parent process at the end of the session.
+
+    If the session is started by an MPI.Intracomm.Spawn call report the process
+    status back to the parent and clean up.
+    """
+    def _disconnect():
+        parent_comm = MPI.Comm.Get_parent()
+        if request.session.testsfailed:
+            status = pytest.ExitCode.TESTS_FAILED
+        elif request.session.testscollected == 0:
+            status = pytest.ExitCode.NO_TESTS_COLLECTED
+        else:
+            status = pytest.ExitCode.OK
+        if parent_comm != MPI.COMM_NULL:
+            parent_comm.gather(status, root=0)
+            parent_comm.Disconnect()
+
+    if _plugin_in_use:
+        request.addfinalizer(_disconnect)
+
+
 def _is_parallel_child_process():
     return CHILD_PROCESS_FLAG in os.environ
 
