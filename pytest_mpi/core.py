@@ -141,7 +141,6 @@ def barrier_finalize(request):
     This should help localise tests that are not fully collective.
 
     """
-    # ~ pass
     if _plugin_in_use:
         request.addfinalizer(lambda: MPI.COMM_WORLD.barrier())
 
