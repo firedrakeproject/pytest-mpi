@@ -8,7 +8,6 @@ from pathlib import Path
 from warnings import warn
 
 import pytest
-from mpi4py import MPI
 
 
 MAX_NPROCS_FLAG = "PYTEST_MPI_MAX_NPROCS"
@@ -37,6 +36,8 @@ def pytest_configure(config):
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionstart(session):
+    from mpi4py import MPI
+
     if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process() and _xdist_active(session):
         raise pytest.UsageError(
             "Wrapping pytest calls in mpiexec is only supported if pytest-xdist "
@@ -108,6 +109,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.hookimpl()
 def pytest_runtest_setup(item):
+    from mpi4py import MPI
+
     if not _plugin_in_use:
         return
 
@@ -145,6 +148,8 @@ def barrier_finalize(request):
     This should help localise tests that are not fully collective.
 
     """
+    from mpi4py import MPI
+
     if _plugin_in_use:
         request.addfinalizer(lambda: MPI.COMM_WORLD.barrier())
 
@@ -156,6 +161,8 @@ def spawn_finalize(request):
     If the session is started by an MPI.Intracomm.Spawn call report the process
     status back to the parent and clean up.
     """
+    from mpi4py import MPI
+
     def _disconnect():
         parent_comm = MPI.Comm.Get_parent()
         if request.session.testsfailed:
