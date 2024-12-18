@@ -38,7 +38,7 @@ def parallel_assert(assertion: Callable, participating: bool = True, msg: str = 
     """
     result = assertion() if participating else True
     all_results = MPI.COMM_WORLD.allgather(result)
-    if not min(all_results):
+    if not all(all_results):
         raise AssertionError(
             "Parallel assertion failed on ranks: "
             f"{[rank for rank, result in enumerate(all_results) if not result]}\n"
