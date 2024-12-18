@@ -2,9 +2,12 @@ import collections
 import numbers
 import os
 import subprocess
+import sys
+
+from pathlib import Path
+from warnings import warn
 
 import pytest
-from mpi4py import MPI
 
 
 MAX_NPROCS_FLAG = "PYTEST_MPI_MAX_NPROCS"
@@ -33,6 +36,8 @@ def pytest_configure(config):
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionstart(session):
+    from mpi4py import MPI
+
     if MPI.COMM_WORLD.size > 1 and not _is_parallel_child_process() and _xdist_active(session):
         raise pytest.UsageError(
             "Wrapping pytest calls in mpiexec is only supported if pytest-xdist "
@@ -104,6 +109,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.hookimpl()
 def pytest_runtest_setup(item):
+    from mpi4py import MPI
+
     if not _plugin_in_use:
         return
 
@@ -141,8 +148,35 @@ def barrier_finalize(request):
     This should help localise tests that are not fully collective.
 
     """
+    from mpi4py import MPI
+
     if _plugin_in_use:
         request.addfinalizer(lambda: MPI.COMM_WORLD.barrier())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def spawn_finalize(request):
+    """Disconnect from a parent process at the end of the session.
+
+    If the session is started by an MPI.Intracomm.Spawn call report the process
+    status back to the parent and clean up.
+    """
+    from mpi4py import MPI
+
+    def _disconnect():
+        parent_comm = MPI.Comm.Get_parent()
+        if request.session.testsfailed:
+            status = pytest.ExitCode.TESTS_FAILED
+        elif request.session.testscollected == 0:
+            status = pytest.ExitCode.NO_TESTS_COLLECTED
+        else:
+            status = pytest.ExitCode.OK
+        if parent_comm != MPI.COMM_NULL:
+            parent_comm.gather(status, root=0)
+            parent_comm.Disconnect()
+
+    if _plugin_in_use:
+        request.addfinalizer(_disconnect)
 
 
 def _is_parallel_child_process():
@@ -174,6 +208,20 @@ def _set_parallel_callback(item):
     if nprocs == 1:
         return
 
+    # Set the executable by sniffing sys.argv[0]
+    # This is necessary since invoking pytest in different ways leads to different behaviour:
+    # https://docs.pytest.org/en/latest/how-to/usage.html#calling-pytest-through-python-m-pytest
+    full_path = Path(sys.argv[0])
+    if full_path.name == "pytest":
+        # If pytest was launched as `pytest ...`
+        executable = [sys.argv[0]]
+    else:
+        # Otherwise assume pytest was launched as `python -m pytest ...`
+        executable = [sys.executable, "-m", "pytest"]
+        if Path('/'.join(full_path.parts[-2:])) != Path('pytest/__main__.py'):
+            # But warn users if it doesn't look right!
+            warn(f"Unrecognised pytest invocation, trying {' '.join(executable)}")
+
     # Run xfailing tests to ensure that errors are reported to calling process
     pytest_args = ["--runxfail", "-s", "-q", f"{item.fspath}::{item.name}"]
     # Try to generate less output on other ranks so stdout is easier to read
@@ -183,9 +231,9 @@ def _set_parallel_callback(item):
     ]
 
     cmd = [
-        "mpiexec", "-n", "1", "-genv", CHILD_PROCESS_FLAG, "1", "python", "-m", "pytest"
+        "mpiexec", "-n", "1", "-genv", CHILD_PROCESS_FLAG, "1", *executable
     ] + pytest_args + [
-        ":", "-n", f"{nprocs-1}", "python", "-m", "pytest"
+        ":", "-n", f"{nprocs-1}", *executable
     ] + quieter_pytest_args
 
     def parallel_callback(*args, **kwargs):
